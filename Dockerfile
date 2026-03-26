@@ -60,16 +60,6 @@ RUN echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cl
 # install cloudflared
 RUN apt-get update && apt-get install -y cloudflared && rm -rf /var/lib/apt/lists/*
 
-# Install Atlassian CLI (acli)
-RUN apt-get update && apt-get install -y wget gnupg2 && \
-    mkdir -p -m 755 /etc/apt/keyrings && \
-    wget -nv -O- https://acli.atlassian.com/gpg/public-key.asc | gpg --dearmor -o /etc/apt/keyrings/acli-archive-keyring.gpg && \
-    chmod go+r /etc/apt/keyrings/acli-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/acli-archive-keyring.gpg] https://acli.atlassian.com/linux/deb stable main" | tee /etc/apt/sources.list.d/acli.list > /dev/null && \
-    apt-get update && \
-    apt-get install -y acli && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
 # Create a working directory
 WORKDIR /app
 
@@ -118,8 +108,15 @@ WORKDIR $HOME/app
 
 USER root
 
-# Create data directory
-RUN mkdir /data && chown user:user /data
+# Create data directory for code and data persistence
+# /workspace - 代码目录
+# /data - 数据目录 (Jupyter notebook 根目录)
+RUN mkdir -p /workspace /data && \
+    chown -R user:user /workspace /data && \
+    chmod -R 777 /workspace /data
+
+# 声明挂载点
+VOLUME ["/workspace", "/data"]
 
 # Remove nginx and supervisor configuration (no longer needed)
 
@@ -135,8 +132,8 @@ RUN pip install --no-cache-dir --upgrade pip
 # Copy requirements and install Python packages with optimizations (single installation)
 COPY --chown=user requirements.txt $HOME/app/
 RUN pip install --no-cache-dir --no-compile --upgrade -r requirements.txt && \
-    find /usr/local -name "*.pyc" -delete && \
-    find /usr/local -name "__pycache__" -type d -exec rm -rf {} + || true
+    (find /usr/local -name "*.pyc" -delete || true) && \
+    (find /usr/local -name "__pycache__" -type d -exec rm -rf {} + || true)
 
 # Install Playwright browsers (Python version) - AFTER requirements
 RUN python -m playwright install chromium chromium-headless-shell firefox webkit
@@ -168,23 +165,10 @@ RUN . /home/user/.nvm/nvm.sh && \
     npx playwright install chromium && \
     npm cache clean --force
 
-# Install uv for Python package management (required for Serena MCP server)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $HOME/.bashrc
-
-# Install SuperClaude using official method
-RUN pip install --no-cache-dir SuperClaude && \
-    pip install --no-cache-dir --upgrade SuperClaude && \
-    printf "all\nall\ny\ny\n" | python -m superclaude install && \
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> $HOME/.bashrc
-
-# Update PATH to include SuperClaude scripts
-ENV PATH="/home/user/.local/bin:$PATH"
-
 # Copy the current directory contents into the container
 COPY --chown=user . $HOME/app
 
-# Create .claude directory and set proper permissions for SuperClaude
+# Create .claude directory and set proper permissions
 RUN mkdir -p $HOME/.claude && \
     chown -R user:user $HOME/.claude && \
     chmod -R 755 $HOME/.claude
@@ -210,23 +194,73 @@ ENV MORPH_API_KEY="" \
     SHELL=/bin/bash \
     JUPYTER_TOKEN=o3sky2025
 
-# Create .claude directory and set proper permissions for SuperClaude
-RUN mkdir -p $HOME/.claude && \
-    chown -R user:user $HOME/.claude && \
-    chmod -R 755 $HOME/.claude
+# Install Clash for Linux (mihomo proxy)
+# https://github.com/nelvko/clash-for-linux-install
+# 订阅地址通过环境变量 CLASH_SUBSCRIBE_URL 传入，或在运行时配置
+RUN echo "安装 Clash 代理..." && \
+    cd /tmp && \
+    git clone --branch master --depth 1 https://gh-proxy.org/https://github.com/nelvko/clash-for-linux-install.git && \
+    cd clash-for-linux-install && \
+    # 非交互式安装，选择 mihomo 内核
+    bash install.sh mihomo || true && \
+    rm -rf /tmp/clash-for-linux-install
 
-# Create jupyter config directory and set permissions
-RUN mkdir -p $HOME/.jupyter && \
-    sudo chmod 1777 /tmp
+# 配置 Clash 订阅地址（运行时可覆盖）
+ENV CLASH_SUBSCRIBE_URL="https://webget.yfjc.xyz/api/v1/client/subscribe?token=437705e11e31eb919a1bdb5ba7078139"
 
-# Create xvfb startup script for browser automation
-USER root
+# 创建自动启动 Clash 的脚本
+RUN echo '#!/bin/bash' > /usr/local/bin/start-clash.sh && \
+    echo '# 自动配置并启动 Clash 代理' >> /usr/local/bin/start-clash.sh && \
+    echo 'set -e' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo 'echo "=== 启动 Clash 代理 ==="' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo '# 检查 clashctl 是否存在' >> /usr/local/bin/start-clash.sh && \
+    echo 'if ! command -v clashctl &> /dev/null && [ ! -f /usr/local/bin/clashctl ]; then' >> /usr/local/bin/start-clash.sh && \
+    echo '    echo "⚠️ clashctl 未安装，跳过代理启动"' >> /usr/local/bin/start-clash.sh && \
+    echo '    exit 0' >> /usr/local/bin/start-clash.sh && \
+    echo 'fi' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo 'CLASH_CTL="${CLASH_CTL:-/usr/local/bin/clashctl}"' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo '# 添加订阅（如果提供了订阅地址）' >> /usr/local/bin/start-clash.sh && \
+    echo 'if [ -n "$CLASH_SUBSCRIBE_URL" ]; then' >> /usr/local/bin/start-clash.sh && \
+    echo '    echo "📡 添加订阅地址..."' >> /usr/local/bin/start-clash.sh && \
+    echo '    "$CLASH_CTL" sub add "$CLASH_SUBSCRIBE_URL" 2>/dev/null || true' >> /usr/local/bin/start-clash.sh && \
+    echo '    # 使用第一个订阅' >> /usr/local/bin/start-clash.sh && \
+    echo '    "$CLASH_CTL" sub use 1 2>/dev/null || true' >> /usr/local/bin/start-clash.sh && \
+    echo 'fi' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo '# 启动代理' >> /usr/local/bin/start-clash.sh && \
+    echo 'echo "🚀 启动代理内核..."' >> /usr/local/bin/start-clash.sh && \
+    echo '"$CLASH_CTL" on 2>/dev/null || clashon 2>/dev/null || true' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo '# 等待代理启动' >> /usr/local/bin/start-clash.sh && \
+    echo 'sleep 3' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo '# 验证代理是否工作' >> /usr/local/bin/start-clash.sh && \
+    echo 'echo "🔍 验证代理连接..."' >> /usr/local/bin/start-clash.sh && \
+    echo 'if curl -s --max-time 10 https://civitai.com/ > /dev/null 2>&1; then' >> /usr/local/bin/start-clash.sh && \
+    echo '    echo "✅ 代理启动成功，可以访问国外网络"' >> /usr/local/bin/start-clash.sh && \
+    echo 'else' >> /usr/local/bin/start-clash.sh && \
+    echo '    echo "⚠️ 代理可能未正常工作，请检查订阅配置"' >> /usr/local/bin/start-clash.sh && \
+    echo 'fi' >> /usr/local/bin/start-clash.sh && \
+    echo '' >> /usr/local/bin/start-clash.sh && \
+    echo 'echo "=== Clash 代理启动完成 ==="' >> /usr/local/bin/start-clash.sh && \
+    chmod +x /usr/local/bin/start-clash.sh
+
+# 更新 xvfb 启动脚本，集成 Clash 自动启动
 RUN echo '#!/bin/bash' > /usr/local/bin/start-with-xvfb.sh && \
+    echo '# 启动 Xvfb 虚拟显示器' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'echo "Starting Xvfb virtual display server..."' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'export DISPLAY=:99' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'echo "Xvfb started on display :99"' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'sleep 2' >> /usr/local/bin/start-with-xvfb.sh && \
+    echo '' >> /usr/local/bin/start-with-xvfb.sh && \
+    echo '# 启动 Clash 代理' >> /usr/local/bin/start-with-xvfb.sh && \
+    echo '/usr/local/bin/start-clash.sh || true' >> /usr/local/bin/start-with-xvfb.sh && \
+    echo '' >> /usr/local/bin/start-with-xvfb.sh && \
     echo 'exec "$@"' >> /usr/local/bin/start-with-xvfb.sh && \
     chmod +x /usr/local/bin/start-with-xvfb.sh
 
@@ -234,7 +268,6 @@ USER user
 
 # Install MCP tools for Claude
 RUN echo "安装 MCP 工具..." && \
-    export PATH="$HOME/.cargo/bin:$PATH" && \
     if command -v claude >/dev/null 2>&1; then \
         echo "使用 claude 命令安装 MCP 工具..." && \
         claude mcp add --transport sse sse-server https://mcp.deepwiki.com/sse || echo "deepwiki MCP 安装完成" && \
@@ -245,10 +278,8 @@ RUN echo "安装 MCP 工具..." && \
         echo "claude 命令不可用，跳过 MCP 工具安装"; \
     fi
 
-# Verify SuperClaude installation
-RUN python -c "import superclaude; print('SuperClaude 安装成功，版本:', getattr(superclaude, '__version__', '未知'))"
-
 # Start Jupyter Lab with Xvfb for browser automation support
+# Clash 代理已在启动脚本中自动启动
 CMD ["/usr/local/bin/start-with-xvfb.sh", "bash", "-c", "python -m jupyterlab \
      --ip 0.0.0.0 \
      --port 8888 \
