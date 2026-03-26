@@ -209,6 +209,7 @@ RUN echo "安装 Clash 代理..." && \
 ENV CLASH_SUBSCRIBE_URL="https://webget.yfjc.xyz/api/v1/client/subscribe?token=437705e11e31eb919a1bdb5ba7078139"
 
 # 创建自动启动 Clash 的脚本
+USER root
 RUN echo '#!/bin/bash' > /usr/local/bin/start-clash.sh && \
     echo '# 自动配置并启动 Clash 代理' >> /usr/local/bin/start-clash.sh && \
     echo 'set -e' >> /usr/local/bin/start-clash.sh && \
