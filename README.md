@@ -531,7 +531,7 @@ docker run -e CLASH_SUBSCRIBE_URL="新订阅地址" ...
 
 欢迎加入技术交流群，分享你的使用心得和反馈建议：
 
-![技术交流群](https://mypicture-1258720957.cos.ap-nanjing.myqcloud.com/Obsidian/image-20260601200018879.png)
+![技术交流群](https://mypicture-1258720957.cos.ap-nanjing.myqcloud.com/20260612_104427_com.tencent.mm.jpg)
 
 ---
 
